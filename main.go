@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +26,10 @@ import (
 	"time"
 
 	"github.com/gravwell/gravwell/v3/ingesters/utils"
+)
+
+const (
+	workerCount = 64
 )
 
 var (
@@ -66,8 +71,10 @@ func main() {
 
 	wg := sync.WaitGroup{}
 	ch := make(chan string, 1024)
-	wg.Add(1)
-	go worker(&wg, ch, h)
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go worker(&wg, ch, h)
+	}
 
 	if err := sampleDisks(globber, h, ch); err != nil {
 		log.Fatalf("Failed to sample %s %v\n", *rootDir, err)
@@ -109,10 +116,13 @@ func sampleDisks(glob string, h *history, ch chan string) (err error) {
 func worker(wg *sync.WaitGroup, ch chan string, h *history) {
 	defer wg.Done()
 	for v := range ch {
+		fmt.Printf("%v Starting\n", v)
 		if res, err := testDisk(v); err != nil {
-			log.Println("Failed to test disk", err)
+			fmt.Printf("Failed test for %v %v\n", v, err)
 		} else if err = h.Add(v, time.Now(), res); err != nil {
-			log.Println("Failed to record result for %v %v\n", v, err)
+			fmt.Printf("Failed to record result for %v %v\n", v, err)
+		} else {
+			fmt.Printf("Tests completed successfully for %v\n", v)
 		}
 	}
 }

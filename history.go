@@ -108,12 +108,16 @@ func (h *history) Add(pth string, ts time.Time, res diskTestResult) (err error) 
 	}
 	h.Lock()
 	defer h.Unlock()
-	//delete from active
-	delete(h.active, pth)
-	err = h.jenc.Encode(historyItem{
+	item := historyItem{
 		Path:    pth,
 		TS:      ts,
 		Results: res,
-	})
+	}
+	if err = h.jenc.Encode(item); err == nil {
+		//delete from active
+		delete(h.active, pth)
+		h.items = append(h.items, item)
+	}
+
 	return
 }

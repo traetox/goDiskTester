@@ -19,11 +19,15 @@ const (
 )
 
 type diskTestResult struct {
-	TimeToRun time.Duration
-	Size      uint64
-	HumanSize string
-	Written   uint64
-	Read      uint64
+	TimeToRun       string
+	Size            uint64
+	HumanSize       string
+	Written         uint64
+	Read            uint64
+	ContiguousWrite string
+	ContiguousRead  string
+	RandomWrite     string
+	RandomRead      string
 }
 
 func testDisk(pth string) (res diskTestResult, err error) {
@@ -33,11 +37,10 @@ func testDisk(pth string) (res diskTestResult, err error) {
 	}
 
 	//get the disk sizes
-	var fi os.FileInfo
-	if fi, err = fio.Stat(); err != nil {
+	var sz int64
+	if sz, err = getBlockDeviceSize(fio); err != nil {
 		return
 	}
-	sz := fi.Size()
 	blockAlignedSize := sz - (sz % blockSize)
 	writeSize := (*wSize * GB) / 2 //because we do contiguous and random
 	if writeSize > blockAlignedSize {
@@ -46,13 +49,15 @@ func testDisk(pth string) (res diskTestResult, err error) {
 
 	ts := time.Now()
 
+	var cw, cr, rw, rr string
+
 	//do the big contiguous read/write
-	if err = contiguousTest(fio, writeSize); err != nil {
+	if cw, cr, err = contiguousTest(fio, writeSize); err != nil {
 		return
 	}
 
 	//do the random tests
-	if err = randomTest(fio, writeSize, blockAlignedSize); err != nil {
+	if rw, rr, err = randomTest(fio, writeSize, blockAlignedSize); err != nil {
 		return
 	}
 
@@ -60,16 +65,20 @@ func testDisk(pth string) (res diskTestResult, err error) {
 		return
 	}
 	res = diskTestResult{
-		TimeToRun: time.Since(ts),
-		Written:   uint64(writeSize * 2),
-		Read:      uint64(writeSize * 2),
-		Size:      uint64(sz),
-		HumanSize: ingest.HumanSize(uint64(sz)),
+		TimeToRun:       time.Since(ts).String(),
+		Written:         uint64(writeSize * 2),
+		Read:            uint64(writeSize * 2),
+		Size:            uint64(sz),
+		HumanSize:       ingest.HumanSize(uint64(sz)),
+		ContiguousWrite: cw,
+		ContiguousRead:  cr,
+		RandomWrite:     rw,
+		RandomRead:      rr,
 	}
 	return
 }
 
-func randomTest(fio *os.File, writeSize, totalSize int64) (err error) {
+func randomTest(fio *os.File, writeSize, totalSize int64) (w, r string, err error) {
 	var n int
 	blocksToWrite := writeSize / blockSize
 	maxBlock := totalSize / blockSize
@@ -79,6 +88,7 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (err error) {
 	hw := newHashWriter(fio)
 	randRdr := rand.New(rand.NewSource(time.Now().UnixNano()))
 
+	ts := time.Now()
 	for i := 0; i < int(blocksToWrite); i++ {
 		//pick a random block
 		blockOffset := randRdr.Int63n(maxBlock) * blockSize
@@ -93,6 +103,12 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (err error) {
 		}
 		blocks = append(blocks, blockOffset)
 	}
+	if err = fio.Sync(); err != nil {
+		err = fmt.Errorf("Failed to sync random writes %w", err)
+		return
+	}
+	w = ingest.HumanRate(uint64(writeSize), time.Since(ts))
+	ts = time.Now()
 
 	hsh := md5.New()
 	for _, off := range blocks {
@@ -104,6 +120,7 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (err error) {
 			return
 		}
 	}
+	r = ingest.HumanRate(uint64(writeSize), time.Since(ts))
 
 	wSum := hw.Sum()
 	rSum := hsh.Sum(nil)
@@ -114,7 +131,7 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (err error) {
 	return
 }
 
-func contiguousTest(fio *os.File, writeSize int64) (err error) {
+func contiguousTest(fio *os.File, writeSize int64) (w, r string, err error) {
 	var written int64
 	var read int64
 	if _, err = fio.Seek(0, 0); err != nil {
@@ -124,12 +141,18 @@ func contiguousTest(fio *os.File, writeSize int64) (err error) {
 	//write it out
 	hw := newHashWriter(fio)
 	randRdr := rand.New(rand.NewSource(time.Now().UnixNano()))
+	ts := time.Now()
 	if written, err = io.CopyN(hw, randRdr, writeSize); err != nil {
 		return
 	} else if written != writeSize {
 		err = fmt.Errorf("Failed to write %d bytes, only %d written", writeSize, written)
 		return
+	} else if err = fio.Sync(); err != nil {
+		err = fmt.Errorf("Failed to sync contiguous write %w", err)
+		return
 	}
+	w = ingest.HumanRate(uint64(writeSize), time.Since(ts))
+	ts = time.Now()
 	//reset to beginning and copy the data back out into an md5 reader
 	if _, err = fio.Seek(0, 0); err != nil {
 		return
@@ -141,6 +164,7 @@ func contiguousTest(fio *os.File, writeSize int64) (err error) {
 		err = fmt.Errorf("Failed to read %d bytes, only %d read", writeSize, read)
 		return
 	}
+	r = ingest.HumanRate(uint64(writeSize), time.Since(ts))
 	wSum := hw.Sum()
 	rSum := hsh.Sum(nil)
 	if v := bytes.Compare(wSum, rSum); v != 0 {
@@ -177,4 +201,11 @@ func (hw *hashWriter) WriteAt(b []byte, off int64) (n int, err error) {
 
 func (hw *hashWriter) Sum() []byte {
 	return hw.hsh.Sum(nil)
+}
+
+func getBlockDeviceSize(fio *os.File) (sz int64, err error) {
+	if sz, err = fio.Seek(0, io.SeekEnd); err == nil {
+		_, err = fio.Seek(0, 0)
+	}
+	return
 }
