@@ -16,6 +16,9 @@ import (
 const (
 	blockSize int64 = 1024 * 1024        //1MB
 	GB        int64 = 1024 * 1024 * 1024 //1GB
+
+	defaultSmartCtlBin  = `/usr/sbin/smartctl`
+	SmartBinEnvOverride = `SMARTCTL_PATH`
 )
 
 type diskTestResult struct {
@@ -78,24 +81,39 @@ func testDisk(pth string) (res diskTestResult, err error) {
 	return
 }
 
+func newBlock(mp map[int64]bool, rr *rand.Rand, maxBlock int64) (block int64) {
+	for {
+		block = rr.Int63n(maxBlock)
+		if _, ok := mp[block]; !ok {
+			mp[block] = true
+			break
+		}
+	}
+	return
+}
+
 func randomTest(fio *os.File, writeSize, totalSize int64) (w, r string, err error) {
 	var n int
 	blocksToWrite := writeSize / blockSize
 	maxBlock := totalSize / blockSize
 
-	block := make([]byte, blockSize)
 	blocks := make([]int64, 0, blocksToWrite)
 	hw := newHashWriter(fio)
 	randRdr := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	ts := time.Now()
+	mp := map[int64]bool{}
 	for i := 0; i < int(blocksToWrite); i++ {
+		block := make([]byte, blockSize)
 		//pick a random block
-		blockOffset := randRdr.Int63n(maxBlock) * blockSize
+		blockOffset := newBlock(mp, randRdr, maxBlock) * blockSize
 		if n, err = randRdr.Read(block); err != nil || n != len(block) {
 			err = fmt.Errorf("failed to create random data block [%d:%d} %w", n, len(block), err)
 			return
 		} else if n, err = hw.WriteAt(block, blockOffset); err != nil {
+			return
+		} else if err = fio.Sync(); err != nil {
+			err = fmt.Errorf("Failed to sync random writes %w", err)
 			return
 		} else if n != len(block) {
 			err = fmt.Errorf("failed to write complete datablock %d/%d", n, len(block))
@@ -103,15 +121,12 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (w, r string, err erro
 		}
 		blocks = append(blocks, blockOffset)
 	}
-	if err = fio.Sync(); err != nil {
-		err = fmt.Errorf("Failed to sync random writes %w", err)
-		return
-	}
 	w = ingest.HumanRate(uint64(writeSize), time.Since(ts))
 	ts = time.Now()
 
 	hsh := md5.New()
 	for _, off := range blocks {
+		block := make([]byte, blockSize)
 		if n, err = fio.ReadAt(block, off); err != nil || n != len(block) {
 			err = fmt.Errorf("failed to read block at 0x%x [%d:%d} %w", off, n, len(block), err)
 			return
@@ -125,7 +140,7 @@ func randomTest(fio *os.File, writeSize, totalSize int64) (w, r string, err erro
 	wSum := hw.Sum()
 	rSum := hsh.Sum(nil)
 	if v := bytes.Compare(wSum, rSum); v != 0 {
-		err = fmt.Errorf("write and read hashes do not match: %x != %x", rSum, wSum)
+		err = fmt.Errorf("random write and read hashes do not match: %x != %x", rSum, wSum)
 	}
 
 	return
@@ -168,7 +183,7 @@ func contiguousTest(fio *os.File, writeSize int64) (w, r string, err error) {
 	wSum := hw.Sum()
 	rSum := hsh.Sum(nil)
 	if v := bytes.Compare(wSum, rSum); v != 0 {
-		err = fmt.Errorf("write and read hashes do not match: %x != %x", rSum, wSum)
+		err = fmt.Errorf("contiguous write and read hashes do not match: %x != %x", rSum, wSum)
 	}
 	return //all good
 }
@@ -209,3 +224,37 @@ func getBlockDeviceSize(fio *os.File) (sz int64, err error) {
 	}
 	return
 }
+
+/*
+func SmartTest(pth string) (res json.RawMessage) {
+	//check
+	binPath := defaultSmartCtlBin
+	if override := os.GetEnv(SmartBinEnvOverride); override != `` {
+		binPath = override
+	}
+
+	//check if the bin exists
+	var fi os.FileInfo
+	if fi, err = os.State(binPath); err != nil {
+		return errJson(err)
+	} else if fi.Mode().IsRegular() == false {
+		return errJson(errors.New("smartctl not a regular file"))
+	}
+}
+
+type errStruct struct {
+	Error error
+}
+
+func errJson(err error) json.RawMessage {
+	if err == nil {
+		return []byte("{}")
+	}
+	bts, err := json.Marshal(errStruct{Error: err})
+	if err != nil {
+		return []byte("{}")
+	}
+	return json.RawMessage(bts)
+}
+
+*/

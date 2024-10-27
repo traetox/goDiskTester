@@ -1,5 +1,5 @@
 # goDiskTester
-Simple application to easy the process of testing a whole gaggle of disks.
+Simple application to ease the process of testing a whole gaggle of disks.
 
 The program drops a pretty printed JSON log of tested disks so that subsequent runs are not duplicated.
 

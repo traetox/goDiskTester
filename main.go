@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gravwell/gravwell/v3/ingesters/utils"
@@ -65,7 +66,7 @@ func main() {
 
 	h, err := newHistory(*stateDb)
 	if err != nil {
-		log.Fatal("Failed to create a history object - %v\n", err)
+		log.Fatalf("Failed to create a history object - %v\n", err)
 	}
 	defer h.Close()
 
@@ -113,16 +114,21 @@ func sampleDisks(glob string, h *history, ch chan string) (err error) {
 	return
 }
 
+var (
+	runid int32
+)
+
 func worker(wg *sync.WaitGroup, ch chan string, h *history) {
 	defer wg.Done()
 	for v := range ch {
-		fmt.Printf("%v Starting\n", v)
+		id := atomic.AddInt32(&runid, 1)
+		fmt.Printf("%d\t%v Starting\n", id, v)
 		if res, err := testDisk(v); err != nil {
-			fmt.Printf("Failed test for %v %v\n", v, err)
+			fmt.Printf("%d\tFailed test for %v %v\n", id, v, err)
 		} else if err = h.Add(v, time.Now(), res); err != nil {
-			fmt.Printf("Failed to record result for %v %v\n", v, err)
+			fmt.Printf("%d\tFailed to record result for %v %v\n", id, v, err)
 		} else {
-			fmt.Printf("Tests completed successfully for %v\n", v)
+			fmt.Printf("%d\tTests completed successfully for %v\n", id, v)
 		}
 	}
 }
